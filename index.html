@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Species Survey Map</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    html, body, #map {
+      height: 100%;
+      margin: 0;
+      padding-top: 30px; /* account for sticky title bar */
+    }
+    body, input, textarea, button {
+      font-family: Helvetica, Arial, sans-serif;
+    }
+    button {
+      background-color: #444;
+      color: white;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-size: 14px;
+      cursor: pointer;
+      margin-top: 4px;
+    }
+    button:hover {
+      background-color: #333;
+    }
+    .map-button {
+      background-color: #444;
+      color: white;
+      padding: 6px 10px;
+      font-size: 14px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .map-button:hover {
+      background-color: #333;
+    }
+    .custom-popup input,
+    .custom-popup textarea {
+      width: 100%;
+      margin: 6px 0;
+      padding: 6px;
+      box-sizing: border-box;
+    }
+    #tableDrawer {
+      position: fixed;
+      bottom: -100%;
+      left: 0;
+      width: 100%;
+      background: #fff;
+      border-top: 2px solid #ccc;
+      padding: 12px;
+      box-shadow: 0 -2px 8px rgba(0,0,0,0.2);
+      transition: bottom 0.3s ease-in-out;
+      z-index: 1001;
+      max-height: 50%;
+      overflow-y: auto;
+    }
+    #dataTable {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    #dataTable th, #dataTable td {
+      border: 1px solid #ccc;
+      padding: 6px;
+      text-align: left;
+    }
+
+    .plugin-title {
+        display: flex;
+        flex-direction: row;
+        align-content: center;
+        margin: 10px;
+    }
+
+    .plugin-title span {
+        font-size: 2rem;
+        font-weight: bold;
+        margin-right: 35px;
+    }
+
+    .plugin-title a {
+        text-align: center;
+        align-self: center;
+        text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="title-bar" style="position: fixed; top: 0; left: 0; right: 0; height: 56px; display: flex; align-items: center; justify-content: space-between; padding: 6px 12px; background-color: #1f1f1f; border-bottom: 1px solid #333; box-shadow: 0 2px 4px rgba(0,0,0,0.4); z-index: 1000;">
+    <img src="assets/logo_white.png" alt="Logo" style="height: 50px; object-fit: contain;" />
+    <span id="titleText" style="font-size: 18px; font-weight: bold; color: #faefef;">
+      Species Survey App
+    </span>
+    
+  </div>
+
+  <div id="map"></div>
+
+  <!-- Table Drawer -->
+  <div id="tableDrawer">
+    <h3>Saved Observations</h3>
+    <table id="dataTable">
+      <thead>
+        <tr>
+          <th>Species</th>
+          <th>ELCODE</th>
+          <th>Note</th>
+          <th>Lat</th>
+          <th>Lng</th>
+          <th>Date/Time</th>
+          <th>Surveyor</th>
+          <th>Project Site</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <div style="margin-top: 10px;">
+      <button onclick="exportCSV()">Export CSV</button>
+      <button onclick="exportGeoJSON()">Export GeoJSON</button>
+      <button onclick="closeTableDrawer()">Close</button>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  
+      <!-- Leaflet BetterFileLayer -->
+  <script type="application/javascript"
+      src="https://unpkg.com/leaflet-better-filelayer@0.1.1/dist/leaflet.betterfilelayer.min.js"
+      crossorigin="anonymous"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-better-filelayer@0.1.1/dist/leaflet.betterfilelayer.css"
+      crossorigin="anonymous" referrerpolicy="no-referrer">
+
+  <script>
+  
+    let map, surveyor = '', projectSite = '';
+    const speciesList = [];
+    const pointLayer = L.layerGroup();
+
+    function loadGlobals() {
+      surveyor = localStorage.getItem('surveyor') || '';
+      projectSite = localStorage.getItem('projectSite') || '';
+      if (!surveyor || !projectSite) {
+        surveyor = prompt('Enter Surveyor:') || '';
+        projectSite = prompt('Enter Project Site:') || '';
+        localStorage.setItem('surveyor', surveyor);
+        localStorage.setItem('projectSite', projectSite);
+      }
+    }
+
+    async function loadSpeciesList() {
+      try {
+        const res = await fetch('assets/csv/species_list.csv');
+        const text = await res.text();
+        window.speciesCodeMap = {}; // global map
+        text.split('\n').slice(1).forEach(line => {
+          const parts = line.split(',');
+          const code = parts[0]?.trim();
+          const name = parts[1]?.trim();
+          if (code && name) {
+            speciesList.push(name);
+            speciesCodeMap[name] = code;
+          }
+        });
+
+      } catch (err) {
+        alert("Could not load species list. Check your CSV path.");
+      }
+    }
+
+    function createPopup(latlng, pointId = null, data = {}) {
+      const marker = L.marker(latlng, { draggable: true }).addTo(pointLayer);
+      const container = document.createElement('div');
+      container.className = 'custom-popup';
+
+      const speciesInput = document.createElement('input');
+      speciesInput.placeholder = 'Species';
+      speciesInput.value = data.species || '';
+      speciesInput.setAttribute('list', 'species-datalist');
+
+      const datalist = document.createElement('datalist');
+      datalist.id = 'species-datalist';
+      speciesList.forEach(sp => {
+        const option = document.createElement('option');
+        option.value = sp;
+        datalist.appendChild(option);
+      });
+
+      const noteInput = document.createElement('textarea');
+      noteInput.placeholder = 'Note';
+      noteInput.value = data.note || '';
+
+      const photoInput = document.createElement('input');
+      photoInput.type = 'file';
+
+      const clearBtn = document.createElement('button');
+      clearBtn.textContent = 'Clear Search';
+      clearBtn.onclick = () => { speciesInput.value = ''; };
+
+      const saveBtn = document.createElement('button');
+      saveBtn.textContent = 'Save';
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.textContent = 'Delete';
+
+      const dateText = document.createElement('div');
+      dateText.textContent = `Date/Time: ${new Date().toLocaleString()}`;
+
+      container.append(speciesInput, datalist, noteInput, photoInput, clearBtn, saveBtn, deleteBtn, dateText);
+      marker.bindPopup(container).openPopup();
+
+      saveBtn.onclick = () => {
+        const file = photoInput.files[0];
+        const reader = new FileReader();
+
+        const saveData = (photoData = '') => {
+          const lat = marker.getLatLng().lat;
+          const lng = marker.getLatLng().lng;
+
+          const point = {
+            lat,
+            lng,
+            elcode: speciesCodeMap[speciesInput.value] || '',
+            species: speciesInput.value || '',
+            note: noteInput.value || '',
+            photo: photoData,
+            surveyor,
+            projectSite,
+            datetime: new Date().toISOString()
+          };
+
+          const existing = JSON.parse(localStorage.getItem('mapPoints') || '[]');
+          const updated = existing.filter(p => p.lat !== lat || p.lng !== lng);
+          updated.push(point);
+          localStorage.setItem('mapPoints', JSON.stringify(updated));
+          map.closePopup();
+        };
+
+        if (file) {
+          reader.onload = () => saveData(reader.result);
+          reader.onerror = () => saveData('');
+          reader.readAsDataURL(file);
+        } else {
+          saveData('');
+        }
+      };
+
+      deleteBtn.onclick = () => {
+        const lat = marker.getLatLng().lat;
+        const lng = marker.getLatLng().lng;
+        const existing = JSON.parse(localStorage.getItem('mapPoints') || '[]');
+        const updated = existing.filter(p => p.lat !== lat || p.lng !== lng);
+        localStorage.setItem('mapPoints', JSON.stringify(updated));
+        pointLayer.removeLayer(marker);
+        map.closePopup();
+      };
+    }
+
+    function restorePoints() {
+      const saved = JSON.parse(localStorage.getItem("mapPoints") || "[]");
+      saved.forEach(p => {
+        createPopup([p.lat, p.lng], null, p);
+      });
+    }
+
+    function closeTableDrawer() {
+      document.getElementById('tableDrawer').style.bottom = '-100%';
+    }
+
+    function setupControls() {
+      const gpsBtn = L.control({ position: 'topleft' });
+      gpsBtn.onAdd = () => {
+        const div = L.DomUtil.create('div', 'map-button');
+        div.innerHTML = '<span title="Add Point (GPS)">📍</span>';
+        div.onclick = () => {
+          navigator.geolocation.getCurrentPosition(
+            pos => {
+              const latlng = [pos.coords.latitude, pos.coords.longitude];
+              setTimeout(() => createPopup(latlng), 100); // slight delay to ensure popup opens
+            },
+            err => alert("Geolocation failed: " + err.message),
+            { enableHighAccuracy: true, timeout: 10000 }
+          );
+        };
+        return div;
+      };
+      gpsBtn.addTo(map);
+
+      const manualBtn = L.control({ position: 'topleft' });
+      manualBtn.onAdd = () => {
+        const div = L.DomUtil.create('div', 'map-button');
+        div.innerHTML = '<span title="Add Point (Manual)">✏️</span>';
+        div.onclick = () => {
+          alert("Tap on the map to place a point.");
+          const handler = (e) => {
+            createPopup(e.latlng);
+            map.off('click', handler);
+          };
+          map.on('click', handler);
+        };
+        return div;
+      };
+      manualBtn.addTo(map);
+
+      const resetBtn = L.control({ position: 'topright' });
+      resetBtn.onAdd = () => {
+        const div = L.DomUtil.create('div', 'map-button');
+        div.innerHTML = '<span title="Reset Survey Info">♻️</span>';
+        div.onclick = () => {
+          surveyor = prompt('Enter Surveyor:') || '';
+          projectSite = prompt('Enter Project Site:') || '';
+          localStorage.setItem('surveyor', surveyor);
+          localStorage.setItem('projectSite', projectSite);
+        };
+        return div;
+      };
+      resetBtn.addTo(map);
+
+      const tableBtn = L.control({ position: 'topright' });
+      tableBtn.onAdd = () => {
+        const div = L.DomUtil.create('div', 'map-button');
+        div.innerHTML = '<span title="Show Saved Data Table">📊</span>';
+        div.onclick = () => {
+          const tableBody = document.querySelector('#dataTable tbody');
+          tableBody.innerHTML = '';
+          const points = JSON.parse(localStorage.getItem('mapPoints') || '[]');
+          points.forEach((p, index) => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+              <td>${p.species}</td>
+              <td>${p.elcode || ''}</td>
+              <td>${p.note}</td>
+              <td>${p.lat.toFixed(5)}</td>
+              <td>${p.lng.toFixed(5)}</td>
+              <td>${p.datetime}</td>
+              <td>${p.surveyor || ''}</td>
+              <td>${p.projectSite || ''}</td>
+              <td><button onclick="deleteObservation(${p.lat}, ${p.lng}, this)">Delete</button></td>
+            `;
+          tableBody.appendChild(row);
+        });
+
+          document.getElementById('tableDrawer').style.bottom = '0';
+        };
+        return div;
+      };
+      tableBtn.addTo(map);
+    }
+
+    async function init() {
+      loadGlobals();
+      await loadSpeciesList();
+
+      map = L.map('map').setView([45, -63], 15);
+
+      const basemaps = {
+        "OpenStreetMap": L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '© OpenStreetMap contributors'
+        }),
+        "Esri World Imagery": L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+          attribution: 'Tiles © Esri'
+        }),
+        "Carto Light": L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+          attribution: '© CartoDB'
+        })
+      };
+
+      basemaps["Esri World Imagery"].addTo(map);
+      L.control.layers(basemaps).addTo(map);
+      pointLayer.addTo(map);
+      setupControls();
+      restorePoints();
+
+      navigator.geolocation.getCurrentPosition(
+        pos => map.setView([pos.coords.latitude, pos.coords.longitude], 16),
+        err => console.warn("User location not available:", err.message),
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
+    }
+
+    function showLastModifiedInTitle() {
+      const lastModified = new Date(document.lastModified).toLocaleString();
+      const titleEl = document.getElementById('titleText');
+      if (titleEl) {
+        titleEl.innerHTML = `NS SPECIES INVENTORY <span style="font-size: 0.75em; opacity: 0.8;">(Updated: ${lastModified})</span>`;
+      }  
+    }
+
+    showLastModifiedInTitle();
+        init();
+        L.Control.betterFileLayer()
+        .addTo(map);
+  
+    function exportCSV() {
+      const rows = [['Species', 'ELCODE', 'Note', 'Lat', 'Lng', 'Date/Time', 'Surveyor', 'Project Site']];
+      document.querySelectorAll('#dataTable tbody tr').forEach(tr => {
+        const row = Array.from(tr.querySelectorAll('td')).map(td => td.innerText.replace(/,/g, ''));
+        rows.push(row);
+      });
+      const csvContent = rows.map(e => e.join(',')).join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'observations.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+  function exportGeoJSON() {
+    const features = [];
+    document.querySelectorAll('#dataTable tbody tr').forEach(tr => {
+      const tds = tr.querySelectorAll('td');
+      const lat = parseFloat(tds[2].innerText);
+      const lng = parseFloat(tds[3].innerText);
+      features.push({
+        type: "Feature",
+        geometry: {
+          type: "Point",
+          coordinates: [lng, lat]
+        },
+        properties: {
+          species: tds[0].innerText,
+          elcode: tds[1].innerText,
+          note: tds[2].innerText,
+          datetime: tds[5].innerText,
+          surveyor: tds[6].innerText,
+          projectSite: tds[7].innerText,
+          
+        }
+
+      });
+    });
+    const geojson = {
+      type: "FeatureCollection",
+      features: features
+    };
+    const blob = new Blob([JSON.stringify(geojson, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'observations.geojson';
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+  
+  function deleteObservation(lat, lng, btn) {
+  const points = JSON.parse(localStorage.getItem("mapPoints") || "[]");
+  const updated = points.filter(p => p.lat !== lat || p.lng !== lng);
+  localStorage.setItem("mapPoints", JSON.stringify(updated));
+  
+  // Remove table row
+  const row = btn.closest('tr');
+  row.remove();
+
+  // Optionally remove from map (if marker exists)
+  pointLayer.eachLayer(layer => {
+    const ll = layer.getLatLng();
+    if (Math.abs(ll.lat - lat) < 0.0001 && Math.abs(ll.lng - lng) < 0.0001) {
+      pointLayer.removeLayer(layer);
+    }
+  });
+}
+
+  </script>
+</body>
+</html>
